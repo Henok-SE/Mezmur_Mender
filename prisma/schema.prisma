@@ -1,0 +1,88 @@
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum OrderStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  REFUNDED
+}
+
+enum PayoutAccountType {
+  TELEBIRR
+  CBE_BIRR
+  BANK_TRANSFER
+}
+
+model Artist {
+  id                  Int               @id @default(autoincrement())
+  name                String            @db.VarChar(255)
+  bio                 String?           @db.Text
+  phoneNumber         String            @db.VarChar(30)
+  payoutAccountType   PayoutAccountType @default(TELEBIRR)
+  payoutAccountNumber String            @db.VarChar(100)
+  isActive            Boolean           @default(true)
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
+  albums              Album[]
+
+  @@map("artists")
+}
+
+model Album {
+  id               Int       @id @default(autoincrement())
+  artistId         Int
+  artist           Artist    @relation(fields: [artistId], references: [id], onDelete: Cascade)
+  title            String    @db.VarChar(255)
+  description      String?   @db.Text
+  coverImageFileId String?   @db.VarChar(255)
+  priceEtb         Decimal   @db.Decimal(10, 2)
+  priceUsd         Decimal?  @default(0.00) @db.Decimal(10, 2)
+  isPublished      Boolean   @default(false)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  tracks           Track[]
+  orders           Order[]
+
+  @@map("albums")
+}
+
+model Track {
+  id              Int      @id @default(autoincrement())
+  albumId         Int
+  album           Album    @relation(fields: [albumId], references: [id], onDelete: Cascade)
+  trackNumber     Int
+  title           String   @db.VarChar(255)
+  telegramFileId  String   @db.VarChar(255)
+  durationSeconds Int?
+  createdAt       DateTime @default(now())
+
+  @@unique([albumId, trackNumber])
+  @@map("tracks")
+}
+
+model Order {
+  id               String      @id @default(uuid())
+  telegramUserId   BigInt
+  telegramUsername String?     @db.VarChar(255)
+  albumId          Int
+  album            Album       @relation(fields: [albumId], references: [id])
+  amount           Decimal     @db.Decimal(10, 2)
+  currency         String      @default("ETB") @db.VarChar(10)
+  txRef            String      @unique @db.VarChar(255)
+  chapaReference   String?     @db.VarChar(255)
+  status           OrderStatus @default(PENDING)
+  createdAt        DateTime    @default(now())
+  paidAt           DateTime?
+
+  @@index([telegramUserId])
+  @@index([txRef])
+  @@map("orders")
+}
