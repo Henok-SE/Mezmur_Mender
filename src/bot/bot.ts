@@ -1,6 +1,7 @@
 import { Bot, InlineKeyboard } from "grammy";
 import { PrismaClient } from "@prisma/client";
 import { ENV } from "../config/env";
+import { chapaService } from "../services/chapa.service";
 
 export const prisma = new PrismaClient();
 export const bot = new Bot(ENV.TELEGRAM_BOT_TOKEN);
@@ -66,6 +67,92 @@ bot.callbackQuery("browse_catalog", async (ctx) => {
   } catch (error) {
     console.error("Error loading catalog:", error);
     await ctx.reply("Failed to load album catalog. Please ensure database connection is configured.");
+  }
+});
+
+// --- Checkout Handler (Phase 3: Chapa Checkout Integration) ---
+bot.callbackQuery(/^buy_album_(\d+)$/, async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const albumId = parseInt(ctx.match[1], 10);
+  const user = ctx.from;
+
+  if (!user) return;
+
+  try {
+    const album = await prisma.album.findUnique({
+      where: { id: albumId },
+      include: { artist: true },
+    });
+
+    if (!album) {
+      return ctx.reply("Album not found or unavailable.");
+    }
+
+    // Check if user already owns this album
+    const existingOrder = await prisma.order.findFirst({
+      where: {
+        telegramUserId: BigInt(user.id),
+        albumId: album.id,
+        status: "COMPLETED",
+      },
+    });
+
+    if (existingOrder) {
+      return ctx.reply(
+        `You already own *${album.title}*! Use /my_albums or click "📂 My Purchased Music" to listen to it anytime.`,
+        { parse_mode: "Markdown" }
+      );
+    }
+
+    // Generate unique transaction reference: gospel_{albumId}_{userId}_{timestamp}
+    const txRef = `gospel_${album.id}_${user.id}_${Date.now()}`;
+
+    // Create pending order in database
+    await prisma.order.create({
+      data: {
+        telegramUserId: BigInt(user.id),
+        telegramUsername: user.username || null,
+        albumId: album.id,
+        amount: album.priceEtb,
+        currency: "ETB",
+        txRef,
+        status: "PENDING",
+      },
+    });
+
+    // Call Chapa to generate payment link
+    const botUsername = ctx.me?.username;
+    const checkoutUrl = await chapaService.initializePayment({
+      amount: Number(album.priceEtb),
+      currency: "ETB",
+      txRef,
+      callbackUrl: `${ENV.APP_BASE_URL}/api/v1/payments/chapa/webhook`,
+      returnUrl: botUsername ? `https://t.me/${botUsername}` : "https://t.me",
+      customizationTitle: `Album: ${album.title}`,
+      customizationDescription: `Support ${album.artist.name}`,
+    });
+
+    const paymentKeyboard = new InlineKeyboard().url(
+      `👉 Pay ${album.priceEtb} ETB (Telebirr / CBE / Card)`,
+      checkoutUrl
+    );
+
+    await ctx.reply(
+      `Ready to buy *${album.title}* by *${album.artist.name}*?\n\n` +
+        `• *Price:* ${album.priceEtb} ETB\n` +
+        `• *Payment options:* Telebirr, CBE Birr, Awash, or Cards\n` +
+        `• Immediate access delivered right in this chat once payment completes.\n\n` +
+        `Tap below to proceed with secure checkout:`,
+      {
+        parse_mode: "Markdown",
+        reply_markup: paymentKeyboard,
+      }
+    );
+  } catch (error: any) {
+    console.error("Error creating Chapa payment session:", error);
+    await ctx.reply(
+      "⚠️ Unable to start checkout right now. Please verify Chapa gateway configuration or try again later."
+    );
   }
 });
 
